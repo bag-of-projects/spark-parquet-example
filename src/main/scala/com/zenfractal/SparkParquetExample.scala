@@ -1,8 +1,10 @@
 package com.zenfractal
 
+import com.esotericsoftware.kryo.Kryo
+import com.twitter.chill.avro.AvroSerializer
+import org.apache.spark.serializer.KryoRegistrator
 import parquet.hadoop.{ParquetOutputFormat, ParquetInputFormat}
-import spark.SparkContext
-import spark.SparkContext._
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.hadoop.mapreduce.Job
 import parquet.avro.{AvroParquetOutputFormat, AvroWriteSupport, AvroReadSupport}
 import parquet.filter.{RecordFilter, UnboundRecordFilter}
@@ -27,9 +29,23 @@ object SparkParquetExample {
     if (tuple._2 != null) println(tuple._2)
   }
 
+  // Register generated Avro classes for Spark's internal serialisation
+  class AminoAcidKryoRegistrator extends KryoRegistrator {
+    override def registerClasses(kryo: Kryo) {
+      kryo.register(classOf[AminoAcid], AvroSerializer.SpecificRecordBinarySerializer[AminoAcid])
+      // kryo.register(....)
+    }
+  }
+
   def main(args: Array[String]) {
-    val sc = new SparkContext("local", "ParquetExample")
-    val job = new Job()
+    val job = Job.getInstance()
+
+    val sparkConf = new SparkConf()
+      .setMaster("local")
+      .setAppName("ParquetExample")
+      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .set("spark.kryo.registrator", classOf[AminoAcidKryoRegistrator].getName)
+    val sc = new SparkContext(sparkConf)
 
     val tempDir = Files.createTempDir()
     val outputDir = new File(tempDir, "output").getAbsolutePath
@@ -46,14 +62,13 @@ object SparkParquetExample {
       new AminoAcid(AminoAcidType.AROMATIC, "tryptophan", "trp", 204.23f),
       new AminoAcid(AminoAcidType.ALIPHATIC, "valine", "val", 117.15f))
 
-
     // Configure the ParquetOutputFormat to use Avro as the serialization format
     ParquetOutputFormat.setWriteSupportClass(job, classOf[AvroWriteSupport])
     // You need to pass the schema to AvroParquet when you are writing objects but not when you
     // are reading them. The schema is saved in Parquet file for future readers to use.
     AvroParquetOutputFormat.setSchema(job, AminoAcid.SCHEMA$)
-    // Create a PairRDD with all keys set to null and wrap each amino acid in serializable objects
-    val rdd = sc.makeRDD(essentialAminoAcids.map(acid => (null, new SerializableAminoAcid(acid))))
+    // Create a PairRDD with all keys set to null
+    val rdd = sc.makeRDD(essentialAminoAcids.map(acid => (null, acid)))
     // Save the RDD to a Parquet file in our temporary output directory
     rdd.saveAsNewAPIHadoopFile(outputDir, classOf[Void], classOf[AminoAcid],
       classOf[ParquetOutputFormat[AminoAcid]], job.getConfiguration)
@@ -71,6 +86,5 @@ object SparkParquetExample {
       classOf[Void], classOf[AminoAcid], job.getConfiguration)
     filteredFile.foreach(aminoAcidPrinter)
   }
-
 
 }
